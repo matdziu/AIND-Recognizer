@@ -1,11 +1,10 @@
-import math
-import statistics
 import warnings
 
 import numpy as np
 from hmmlearn.hmm import GaussianHMM
 from sklearn.model_selection import KFold
-from asl_utils import combine_sequences
+
+import asl_utils
 
 
 class ModelSelector(object):
@@ -76,8 +75,25 @@ class SelectorBIC(ModelSelector):
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        best_score = float("inf")
+        best_model = None
+
+        for hidden_states_number in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                model = GaussianHMM(n_components=hidden_states_number, n_iter=1000).fit(self.X, self.lengths)
+                log_likelihood = model.score(self.X, self.lengths)
+                data_points_number = self.X.shape[0]
+                features_number = self.X.shape[1]
+                parameters_number = hidden_states_number * features_number * 2
+                bic_score = -2 * log_likelihood + parameters_number * np.log(data_points_number)
+                if bic_score < best_score:
+                    best_score = bic_score
+                    best_model = model
+
+            except Exception as e:
+                continue
+
+        return best_model
 
 
 class SelectorDIC(ModelSelector):
@@ -92,8 +108,32 @@ class SelectorDIC(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        best_score = float("-inf")
+        best_model = None
+        number_of_words = len(self.hwords.keys())
+
+        for hidden_states_number in range(self.min_n_components, self.max_n_components):
+            sum_log_likelihood_other_words = 0
+            try:
+                model = GaussianHMM(n_components=hidden_states_number, n_iter=1000).fit(self.X, self.lengths)
+                sum_log_likelihood_matching_words = model.score(self.X, self.lengths)
+
+                for word in self.hwords.keys():
+                    other_word_data_points, lengths = self.hwords[word]
+                    log_likelihood_other_words = model.score(other_word_data_points, lengths)
+                    sum_log_likelihood_other_words += log_likelihood_other_words
+
+            except Exception as e:
+                break
+
+            dic_score = sum_log_likelihood_matching_words - (1 / (number_of_words - 1)) * (
+                sum_log_likelihood_other_words - sum_log_likelihood_matching_words)
+
+            if dic_score > best_score:
+                best_score = dic_score
+                best_model = model
+
+        return best_model
 
 
 class SelectorCV(ModelSelector):
@@ -104,5 +144,32 @@ class SelectorCV(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        k_fold = KFold()
+        best_score = float("-inf")
+        best_model = None
+
+        for hidden_states_number in range(self.min_n_components, self.max_n_components + 1):
+            scores = []
+            model = None
+
+            if len(self.sequences) < 3:
+                break
+
+            for training_set_indices, test_set_indices in k_fold.split(self.sequences):
+                training_set, training_set_lengths = asl_utils.combine_sequences(training_set_indices, self.sequences)
+                test_set, test_set_lengths = asl_utils.combine_sequences(test_set_indices, self.sequences)
+
+                try:
+                    model = GaussianHMM(n_components=hidden_states_number, n_iter=1000).fit(training_set,
+                                                                                            training_set_lengths)
+                    log_likelihood = model.score(test_set, test_set_lengths)
+                    scores.append(log_likelihood)
+                except Exception as e:
+                    break
+
+            average_score = np.average(scores)
+            if average_score > best_score:
+                best_score = average_score
+                best_model = model
+
+        return best_model if best_model is not None else self.base_model(self.n_constant)
